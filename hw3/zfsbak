@@ -1,0 +1,121 @@
+#!/usr/local/bin/bash
+# DONE
+usage(){
+    echo "Usage:"
+    echo "- create: zfsbak DATASET [ROTATION_CNT]"
+    echo "- list: zfsbak -l|--list [DATASET|ID|DATASET ID...]"
+    echo "- delete: zfsbak -d|--delete [DATASET|ID|DATASET ID...]"
+    echo "- export: zfsbak -e|--export DATASET [ID]"
+    echo "- import: zfsbak -i|--import FILENAME DATASET"
+}
+# DONE
+create(){
+    timestamp=$(date "+%Y-%m-%d-%H:%M:%S")
+    zfs snapshot -r "$1@zfsbak_${timestamp}"
+    printf "Snap %s@zfsbak_%s\n" "$1" "$timestamp"
+
+    rotation=${2:-12}
+    num=$(zfsbak -l "$1" | tail -n 1 | awk '{print $1}')
+    if [ "$num" -gt "$rotation" ] ; then
+	cnt=$(( num-rotation ))
+	for i in $(seq 1 "$cnt") ; do
+	    zfsbak -d "$1" 1
+	done
+	#linenum=$(./zfsbak -l "$1" | tail -n +2 | head -n "$cnt" | awk '{print $1}' | tr "\n" " ")
+	#echo "$linenum"
+	#./zfsbak -d "$1" "$linenum" 
+    fi
+}
+# DONE
+list(){
+    num='^[0-9]+$'
+    id=-1
+    dataset="mypool"
+
+    if [ -n "$1" ] && [ -z "$2" ] ; then
+	if [[ $1 =~ $num ]] ; then # specify ID
+            id="$1"
+        else # specify DATASET
+	    dataset="$1"
+	fi
+    fi
+
+    # specify both ID and DATASET
+    if [ -n "$1" ] && [ -n "$2" ] ; then
+	dataset="$1"
+	id="$2"
+    fi
+ 
+    cnt=1
+    printf "ID\tDATASET\t\tTIME\n"
+    list=$(zfs list -rt snapshot -o name "${dataset}" 2> /dev/null | tail -n +2 | sort -t @ -k 2)
+    if [ -n "$list" ] ; then
+    	printf "%s\n" "$list" | 
+    	while read line ; do
+    	    if [ "$id" -eq -1 ] ; then
+                printf "%d\t%s\t%s\n" "$cnt" $(printf "%s" "${line}" | cut -d @ -f 1) $(printf "%s" "${line}" | cut -d @ -f 2 | cut -c 8-) 
+            elif [ "$id" -eq "$cnt" ] ; then
+                printf "%d\t%s\t%s\n" "$cnt" $(printf "%s" "${line}" | cut -d @ -f 1) $(printf "%s" "${line}" | cut -d @ -f 2 | cut -c 8-) 
+	    fi
+	    cnt=$(( cnt+1 ))
+        done
+    fi
+}
+# DONE
+delete(){
+    if [ -n "$1" ] && [ -z "$2" ] ; then
+        zfsbak -l "$1" | tail -n +2 | awk '{print $2 "@zfsbak_" $3}' | 
+	while read line ; do
+	    zfs destroy -r "$line"
+	    printf "Destory %s\n" "$line"
+	done
+    elif [ -n "$2" ] ; then
+	for i in "${@:2}" ; do
+	    name=$(zfsbak -l "$1" 1 | tail -n +2 | awk '{print $2 "@zfsbak_" $3}')
+	    zfs destroy -r "$name"
+	    printf "Destroy %s\n" "$name"
+	done
+    else
+        zfsbak -l | tail -n +2 | awk '{print $2 "@zfsbak_" $3}' | 
+	while read line ; do
+	    zfs destroy -r "$line"
+	    printf "Destroy %s\n" "$line"
+	done
+    fi
+}
+
+eexport(){
+    id=1
+    if [ -n "$2" ] ; then
+	id="$2"
+    fi
+    snapshotname=$(zfsbak -l "$1" "$id" | tail -n +2 | awk '{printf $2 "@zfsbak_" $3}')
+    sudouser=$(printenv SUDO_USER)
+    homedir=$(getent passwd "$sudouser" | cut -d: -f6)
+    filename="$(echo $snapshotname | sed -e 's/\//_/g').zst.aes"
+    pathname="$homedir/$filename"
+    zfs send -R "$snapshotname" | zstd -qc | openssl enc -e -aes-256-cbc -pbkdf2 -pass pass:"$ZFSBAK_PASS" -out "$pathname"
+    printf "Export %s to ~/%s\n" "$snapshotname" "$filename"
+}
+
+import(){
+    sudouser=$(printenv SUDO_USER)
+    homedir=$(getent passwd "$sudouser" | cut -d: -f6)
+    #realpath=$(echo "$homedir$1" | sed -e 's/~//g')
+    zstd -qcd "$1" | sudo zfs receive -F "$2"
+    printf "Import %s to %s\n" "$1" "$2" 
+}
+
+if [ "$#" -eq 0 ] ; then
+    usage
+elif [ "$1" = "-l" ] || [ "$1" = "--list" ] ; then
+    list "$2" "$3"
+elif [ "$1" = "-d" ] || [ "$1" = "--delete" ] ; then
+    delete "$2" "${@:3}"
+elif [ "$1" = "-e" ] || [ "$1" = "--export" ] ; then
+    eexport "$2" "$3"
+elif [ "$1" = "-i" ] || [ "$1" = "--import" ] ; then
+    import "$2" "$3"
+else
+    create "$1" "$2"
+fi

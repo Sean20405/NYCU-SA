@@ -1,0 +1,6 @@
+#!/bin/sh
+if [ $3 = "ssh" ] ; then
+    sudo fail2ban-client set sshd unbanip $1
+else
+    sudo fail2ban-client set nginx-http-auth unbanip $1
+fi
